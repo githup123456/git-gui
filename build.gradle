@@ -1,0 +1,399 @@
+// Apply the Performance Monitoring plugin
+apply plugin: 'com.google.firebase.firebase-perf'
+apply plugin: 'com.android.application'
+apply plugin: 'com.google.gms.google-services'
+//ga
+//fire base crash sdk
+apply plugin: 'com.google.firebase.crashlytics'
+//apply plugin: 'AutoPackagingPlugin'
+//apply plugin: 'com.personalize.plugin.dynamic.package'
+def releaseTime() {
+    return new Date().format("yyyyMMddHH", TimeZone.getTimeZone("UTC")).toInteger()
+}
+
+//获取自动版本号
+def gitVersionCode() {
+    def cmd = 'git rev-list HEAD --count'
+    return cmd.execute().text.trim().toInteger()
+}
+
+//release
+def SDK_VERSION_NAME = "1.0.8"
+def SDK_VERSION_CODE = gitVersionCode()
+def RELEASE_TIME = releaseTime()
+def HOST_DEBUG = '"http://39.108.114.22:20001"';//国内
+def HOST_ONLINE = '"https://api.m1theme.com"';//海外1
+
+android {
+    aaptOptions {
+        noCompress "webp"
+    }
+    compileSdkVersion 29
+    buildToolsVersion '29.0.3'
+    defaultConfig {
+        applicationId "com.personalized.theme.magic"
+        targetSdkVersion 29
+        minSdkVersion 19
+        versionCode SDK_VERSION_CODE
+        versionName SDK_VERSION_NAME
+        multiDexEnabled true
+        flavorDimensions "versionCode"
+        // Creates a placeholder property to use in the manifest.
+        manifestPlaceholders = [
+                k_appName: "@string/app_name",
+        ]
+        buildConfigField('boolean', 'AD_TEST', 'true')
+        buildConfigField('String', 'HOST', HOST_DEBUG)
+        //定义main dex中必须保留的类
+        multiDexKeepProguard file('mainDexClasses.pro')
+        ndk.abiFilters 'armeabi-v7a', 'arm64-v8a'
+    }
+    lintOptions {
+        checkReleaseBuilds false
+        abortOnError false
+        disable 'MissingTranslation'
+    }
+
+
+    sourceSets {
+        main {
+            java.srcDirs = ['src/main/java', 'src/main/aidl']
+            resources.srcDirs = ['src/main/java', 'src/main/aidl', 'src/main/res/raw/images']
+            aidl.srcDirs = ['src/main/aidl']
+        }
+    }
+    //批量配置
+    productFlavors.all { flavor ->
+        flavor.manifestPlaceholders = [CHANNEL: name]
+    }
+    def props = new Properties()
+    file("channel.properties").withInputStream { props.load(it) }
+    signingConfigs {
+        debug {
+            storeFile file("../debug.keystore")
+        }
+        release {
+            //适用分支签名
+        }
+        props.each { k, v ->
+            "$k" {
+                File propFile = file("../keystore/${k}SignConfig.properties");
+                if (!propFile.exists())
+                    propFile = file("../keystore/CommonSignConfig.properties");
+                println(propFile.getAbsolutePath())
+                if (propFile.exists()) {//遍历配置文件 生产分支签名
+                    def Properties signProp = new Properties()
+                    signProp.load(new FileInputStream(propFile))
+                    if (signProp.containsKey('STORE_FILE') && signProp.containsKey('STORE_PASSWORD') &&
+                            signProp.containsKey('KEY_ALIAS') && signProp.containsKey('KEY_PASSWORD')) {
+                        println(signProp['STORE_FILE'])
+                        println(signProp['STORE_PASSWORD'])
+                        println(signProp['KEY_ALIAS'])
+                        println(signProp['KEY_PASSWORD'])
+                        "$k" {
+                            storeFile file("../keystore/" + signProp['STORE_FILE'])
+                            storePassword signProp['STORE_PASSWORD']
+                            keyAlias signProp['KEY_ALIAS']
+                            keyPassword signProp['KEY_PASSWORD']
+                        }
+                    } else {
+                        android.buildTypes.release.signingConfig = null
+                    }
+                } else {
+                    android.buildTypes.release.signingConfig = null
+                }
+            }
+        }
+    }
+    buildTypes {
+        release {
+            minifyEnabled true
+            zipAlignEnabled true
+            shrinkResources true
+            proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard.cfg'
+            signingConfig null //release签名置空 使用分支签名
+            debuggable false
+            jniDebuggable false
+            // Creates a placeholder property to use in the manifest.
+            manifestPlaceholders = [
+                    k_appName: "@string/app_name",
+                    auto_perf: false,
+            ]
+            buildConfigField('boolean', 'AD_TEST', 'false')
+            buildConfigField('String', 'HOST', HOST_ONLINE)
+            firebaseCrashlytics {//crash mapping upload diaable
+                mappingFileUploadEnabled true
+            }
+        }
+        debug {
+            applicationIdSuffix ".test"
+            ext.alwaysUpdateBuildId = false
+            // Creates a placeholder property to use in the manifest.
+            manifestPlaceholders = [
+                    k_appName: "@string/app_name_debug",
+                    auto_perf: true,
+            ]
+            debuggable true
+            jniDebuggable true
+            signingConfig signingConfigs.debug //debug分支签名固定
+            firebaseCrashlytics {//crash mapping upload diaable
+                mappingFileUploadEnabled false
+            }
+        }
+        Xautotest {
+            applicationIdSuffix ".test"
+            minifyEnabled true
+            zipAlignEnabled true
+            shrinkResources true
+            proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard.cfg'
+            signingConfig null //release签名置空 使用分支签名
+            debuggable false
+            jniDebuggable false
+            // Creates a placeholder property to use in the manifest.
+            manifestPlaceholders = [
+                    k_appName: "@string/app_name_autotest",
+                    auto_perf: true,
+            ]
+            firebaseCrashlytics {
+                mappingFileUploadEnabled false
+            }
+            buildConfigField('String', 'HOST', HOST_ONLINE)
+        }
+    }
+    repositories {
+        maven { url "https://jitpack.io" }
+    }
+    lintOptions {
+        checkReleaseBuilds false
+        abortOnError false
+    }
+    //gradle classpath 4.0 写法
+    applicationVariants.all { variant ->
+
+        variant.outputs.each { output ->
+            println("output name:" + output.name)
+            println("variant.flavorName name:" + variant.flavorName)
+            def flavorName = variant.flavorName
+//            output name:LBGrimReaper-debug
+//            output name:LBGrimReaper-release
+//            output name:LBGrimReaper-Xautotest
+            if (output.name.endsWith("release")) {
+                def fileName
+                variant.packageApplicationProvider.get().outputDirectory = project.file('../apk/' + versionCode + '/')
+                fileName = variant.applicationId + "_" + flavorName + "_" + variant.versionName + "_" + variant.versionCode + "_" + RELEASE_TIME + '_release.apk'
+                output.outputFileName = fileName
+            } else if (output.name.endsWith("Xautotest")) {
+                def fileName
+                variant.packageApplicationProvider.get().outputDirectory = project.file('../apk/' + versionCode + '/')
+                fileName = variant.applicationId + "_" + flavorName + "_" + variant.versionName + "_" + variant.versionCode + "_" + RELEASE_TIME + '_autotest.apk'
+                println("variant.flavorName name 2:" + flavorName)
+                println("fileName:" + fileName)
+                output.outputFileName = fileName
+            }
+        }
+    }
+
+    flavorDimensions "def"
+    productFlavors {
+        assert props instanceof Map
+        //从配置文件读取分支和包名信息
+        props.each { k, v ->
+            "$k" {
+                applicationId "$v"
+                dimension "def"
+                signingConfig signingConfigs."$k" // 配置分支签名
+            }
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_1_8
+        targetCompatibility JavaVersion.VERSION_1_8
+    }
+
+//    externalNativeBuild {
+//        cmake {
+//            path "src/main/cpp/CMakeLists.txt"
+//        }
+//    }
+
+}
+
+//移除unity ads READ_PHONE_STATE权限.
+project.afterEvaluate {
+    project.android.applicationVariants.all { variant ->
+        variant.outputs.each { output ->
+            output.processResources.doFirst { pm ->
+                String manifestPath = output.processResources.manifestFile
+                def manifestContent = file(manifestPath).getText()
+                manifestContent = manifestContent.replace('<uses-permission android:name="android.permission.READ_PHONE_STATE" />', '')
+                file(manifestPath).write(manifestContent)
+            }
+        }
+    }
+}
+repositories {
+    flatDir {
+        dirs 'libs'
+    }
+    jcenter()
+}
+
+dependencies {
+    implementation fileTree(include: ['*.jar'], dir: 'libs')
+    implementation 'org.jetbrains:annotations:16.0.1'
+    // module
+    implementation project(':EngineCoCos2dx')
+    implementation project(path: ':CocExtra')
+    api project(path: ':commonlib')
+    api project(path: ':ZipTool')
+
+    implementation 'com.google.code.gson:gson:2.8.6'
+    implementation 'com.google.android.material:material:1.2.1'
+    //    grvooy http工具类
+    //noinspection GradleCompatible androidx
+    implementation 'androidx.recyclerview:recyclerview:1.1.0'
+    implementation 'androidx.constraintlayout:constraintlayout:2.0.4'
+    implementation 'androidx.multidex:multidex:2.0.1'   //解决5.0下系统 NoClassDefFoundError
+    implementation 'androidx.legacy:legacy-support-v13:1.0.0'
+    implementation 'androidx.preference:preference:1.1.1'
+    implementation 'androidx.legacy:legacy-preference-v14:1.0.0'
+    implementation 'androidx.legacy:legacy-support-v4:1.0.0'
+
+    //高斯模糊
+    implementation 'jp.wasabeef:glide-transformations:2.0.2'
+    implementation 'de.hdodenhof:circleimageview:3.1.0'
+    // Google (AdMob) FireBase
+    /******************ads start**********************/
+    implementation 'com.google.android.gms:play-services-ads:19.7.0'
+    implementation 'com.google.firebase:firebase-core:18.0.2'
+    implementation 'com.google.firebase:firebase-config:20.0.3'
+    // Recommended: Add the Firebase SDK for Google Analytics.
+    implementation 'com.google.firebase:firebase-analytics:18.0.2'
+    // Add the Firebase Crashlytics SDK.
+    implementation 'com.google.firebase:firebase-crashlytics:17.3.1'
+//    //云消息推送
+    implementation 'com.google.firebase:firebase-messaging:21.0.1'
+/******************ads start**********************/
+    //admob 中介套件
+    implementation 'com.google.android.ads:mediation-test-suite:1.5.0'
+    //facebook sdk.
+    implementation 'com.android.support:support-annotations:28.0.0'
+    // Required Dependency by Audience Network SDK
+    //AppLovin
+//    implementation 'com.google.ads.mediation:applovin:9.13.1.0'
+//    //MoPub
+//    implementation 'com.google.ads.mediation:mopub:5.13.1.0'
+//    //unity
+    implementation 'com.google.ads.mediation:unity:3.6.0.0'
+/******************ads end**********************/
+    //facebook 中间套件
+    implementation 'com.google.ads.mediation:facebook:6.2.0.1'
+    implementation 'com.facebook.android:audience-network-sdk:6.2.0'
+    implementation 'com.facebook.android:facebook-android-sdk:[5,6)'
+
+    //第三方
+    implementation 'com.github.Aspsine:SwipeToLoadLayout:1.0.4'
+    implementation 'com.github.bumptech.glide:glide:4.11.0'
+    implementation 'com.github.bumptech.glide:annotations:4.11.0'
+    annotationProcessor 'com.github.bumptech.glide:compiler:4.11.0'
+
+    //launcher
+    implementation files('libs/oauth.net.jar')
+    api project(path: ':launcher')
+    api project(path: ':mvp')
+    implementation 'com.mikepenz:fastadapter:3.2.3@aar'
+    implementation 'com.mikepenz:fastadapter-commons:3.0.0@aar'
+    implementation 'com.mikepenz:fastadapter-extensions:3.0.0@aar'
+    implementation 'jp.wasabeef:recyclerview-animators:2.2.7'
+    implementation 'com.afollestad.material-dialogs:core:0.9.6.0'
+    implementation 'de.psdev.licensesdialog:licensesdialog:1.8.3'
+    implementation 'in.championswimmer:SimpleFingerGestures_Android_Library:1.1'
+    implementation 'com.nononsenseapps:filepicker:4.2.1'
+    implementation('com.github.ozodrukh:CircularReveal:2.0.1@aar') {
+        transitive = true
+    }
+    implementation('com.github.turing-tech:MaterialScrollBar:12.4.0') {
+        exclude group: 'com.android.support'
+    }
+    implementation 'com.allenliu:AndroidSystemShare:1.0.1'
+    implementation 'com.bigkoo:convenientbanner:2.1.5'
+    implementation 'com.readystatesoftware.systembartint:systembartint:1.0.3'
+    implementation 'com.bigkoo:convenientbanner:2.1.5'
+
+    //引入fresco依赖库
+    implementation 'com.facebook.fresco:fresco:1.13.0'
+//    // 支持 WebP （静态图+动图），需要添加
+    implementation 'com.facebook.fresco:animated-webp:1.13.0'
+    implementation 'com.facebook.fresco:webpsupport:1.13.0'
+    implementation 'com.facebook.fresco:animated-base:1.13.0'
+    implementation 'com.github.GrenderG:Toasty:1.4.2'
+//
+    implementation 'com.github.ChengangFeng:TickView:v1.0.2'
+//    video player
+//    implementation 'cn.jzvd:jiaozivideoplayer:7.4.1'
+//lottie 动画
+//    implementation 'com.airbnb.android:lottie:3.6.0'
+    //    指示器
+    implementation 'com.github.hackware1993:MagicIndicator:1.5.0'
+//    base adapter
+    implementation 'com.github.CymChad:BaseRecyclerViewAdapterHelper:3.0.1'
+//    debugImplementation 'com.squareup.leakcanary:leakcanary-android:2.4'
+    //Google Play Billing
+//    implementation 'com.android.billingclient:billing:3.0.2'
+    //    圆角图片
+    implementation 'com.makeramen:roundedimageview:2.3.0'
+    //    butterknife
+    implementation 'com.jakewharton:butterknife:10.2.3'
+    annotationProcessor 'com.jakewharton:butterknife-compiler:10.2.3'
+    //    refresh layout
+    implementation 'com.scwang.smart:refresh-layout-kernel:2.0.1'      //核心必须依赖
+    implementation 'com.scwang.smart:refresh-header-classics:2.0.1'    //经典刷新头
+    implementation 'com.scwang.smart:refresh-footer-classics:2.0.1'    //经典加载
+    // Add the dependency for the Performance Monitoring library
+    implementation 'com.google.firebase:firebase-perf:19.1.1'
+    //    permission
+    implementation 'com.github.tbruyelle:rxpermissions:0.10.2'
+//    video player
+    implementation 'cn.jzvd:jiaozivideoplayer:7.6.0'
+    implementation 'com.google.android.exoplayer:exoplayer:2.12.1'
+    def lifecycle_version = "2.2.0"
+    implementation "androidx.lifecycle:lifecycle-extensions:$lifecycle_version"
+    implementation "androidx.lifecycle:lifecycle-runtime:$lifecycle_version"
+    annotationProcessor "androidx.lifecycle:lifecycle-compiler:$lifecycle_version"
+
+
+    implementation 'com.davemorrissey.labs:subsampling-scale-image-view:3.10.0'
+
+    //轮播图
+    implementation 'com.youth.banner:banner:2.1.0'
+}
+
+//aab复制任务挂载
+tasks.whenTaskAdded { task ->
+    if (task.name.startsWith("bundle") && task.name.endsWith("Release")) {
+        if (!task.name.equals("bundleRelease")) {
+            def renameTaskName = "rename${task.name.capitalize()}Aab"
+            def i = task.name.lastIndexOf("Release");
+            println("rename task renameTaskName:" + renameTaskName)
+            println("rename task Release pos is:" + i)
+
+            def flavor = task.name.substring("bundle".length(), i)
+            def flavorDir = flavor + "Release"
+            println("rename task flavor:" + flavor)
+            tasks.create(renameTaskName, Copy) {
+                from("${buildDir}/outputs/bundle/${flavorDir}")
+                into("${rootDir}/apk/${SDK_VERSION_CODE}/")
+                include "app-${flavor}-release.aab"
+                def aabName = flavor + "_" + SDK_VERSION_NAME + "_" + SDK_VERSION_CODE + "_" + RELEASE_TIME + '_release.aab'
+                rename "app-${flavor}-release.aab", "${aabName}"
+            }
+
+            task.finalizedBy(renameTaskName)
+//            task.doLast {
+//                renameTaskName.execute()
+//            }
+        }
+    }
+}
+
